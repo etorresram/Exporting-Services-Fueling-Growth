@@ -1,0 +1,790 @@
+---
+title: "WDI"
+output: html_notebook
+---
+```{r}
+rm(list = ls())
+
+```
+
+```{r}
+#install.packages("WDI")
+#install.packages("pwt10")
+library(WDI)
+library(pwt10)
+library(dplyr)
+library(ggplot2)
+```
+
+
+```{r}
+# ---- Download Data ----
+df <- WDI(
+  country = c("BO", "CO", "EC", "PE"),  # Andean countries
+  indicator = c(
+    "gdp_pc_real" = "NY.GDP.PCAP.KD",            # GDP per capita (constant 2015 US$) ******** GDP per capita *********
+    "gdp_real" = "NY.GDP.MKTP.KD",               # GDP (constant 2015 US$) ********* GDP *********
+    "gdp_growth" = "NY.GDP.MKTP.KD.ZG",          # GDP growth (annual %)
+    
+    # OPENNESS --
+    "gdp_ppp" = "NY.GDP.MKTP.PP.KD",             # GDP, PPP (constant 2021 international $)
+    "exports_nom" = "NE.EXP.GNFS.CD",            # Exports of goods and services (current US$)
+    "imports_nom" = "NE.IMP.GNFS.CD",            # Imports of goods and services (current US$)
+    
+    "serv_exports_nom" = "BX.GSR.NFSV.CD",       # Service exports  (BoP, current US$) ****** Service Exports *******
+    "goods_exports_nom" = "BX.GSR.MRCH.CD",      # Goods exports  (BoP, current US$) ****** Goods Exports *******
+    "deflator" = "NY.GDP.DEFL.ZS",               # GDP deflator (base year varies)
+    
+    "ict_nom" = "BX.GSR.CCIS.CD",                # ICT service exports (BoP, current US$)
+    "merch_nom" = "TX.VAL.MRCH.CD.WT",           # Merchandise exports (current US$)
+    "agri_merch" = "TX.VAL.AGRI.ZS.UN",          # Agricultural raw materials exports (% of merchandise exports)
+    
+    "gfcf_real" = "NE.GDI.FTOT.KD",              # Gross fixed capital formation (constant 2015 US$) ******* GFCF ********
+    "gfcf_gdp" = "NE.GDI.FTOT.ZS",               # Gross fixed capital formation (% of GDP)
+    "inflation" = "FP.CPI.TOTL.ZG",              # Consumer prices (annual %)
+    "urban_pop" = "SP.URB.TOTL.IN.ZS",           # Urban population (% of total population)
+    "fdi_inflows" = "BX.KLT.DINV.CD.WD",         # Foreign direct investment, net inflows (BoP, current US$) ***** FDI *****
+    "fdi_gdp" = "BX.KLT.DINV.WD.GD.ZS",          # Foreign direct investment, net inflows (% of GDP)
+    "rer_2010" = "PX.REX.REER"                   # Real effective exchange rate index 2010
+  ),
+  start = 1977,
+  end = 2023,
+  extra = TRUE
+)
+```
+
+
+```{r}
+# Human Capital Index PWT 10.01
+
+library(forecast)
+
+# Load data
+data("pwt10.01")
+
+# Filter data
+hci_data <- pwt10.01 %>%
+  filter(country %in% c("Bolivia (Plurinational State of)", "Colombia", "Ecuador", "Peru"),
+         year >= 1977) %>%
+  select(country, year, hc) %>%
+  arrange(country, year)
+
+# Define a function to project 'hc' considering the COVID-19 effect
+project_hc_covid <- function(df) {
+  ts_data <- ts(df$hc, start = min(df$year), frequency = 1)
+  
+  # Fit an ARIMA model
+  fit <- auto.arima(ts_data)
+  
+  # Forecast 4 years ahead (2020–2023)
+  forecasted <- forecast(fit, h = 4)
+  
+  # Extract predicted values
+  predicted_values <- as.numeric(forecasted$mean)
+  
+  # Introduce COVID-19 shock in 2020 (simulated 1.5% drop)
+  predicted_values[1] <- predicted_values[1] * 0.985
+  
+  # Simulate slight recovery from 2021 onwards
+  predicted_values[2] <- predicted_values[1] * 1.003
+  predicted_values[3] <- predicted_values[2] * 1.005
+  predicted_values[4] <- predicted_values[3] * 1.007
+  
+  # Create a new dataframe with forecasts
+  future_years <- (max(df$year) + 1):(max(df$year) + 4)
+  
+  data.frame(
+    country = unique(df$country),
+    year = future_years,
+    hc = predicted_values
+  )
+}
+
+# Apply the projection function to each country
+hci_forecast <- hci_data %>%
+  group_by(country) %>%
+  group_split() %>%
+  lapply(project_hc_covid) %>%
+  bind_rows()
+
+# Combine original and forecasted data
+hci_complete <- bind_rows(hci_data, hci_forecast) %>%
+  arrange(country, year)
+
+# Rename Bolivia for matching
+hci_complete <- hci_complete %>%
+  mutate(country = case_when(
+    country == "Bolivia (Plurinational State of)" ~ "Bolivia",
+    TRUE ~ country
+  ))
+```
+
+
+```{r}
+merged_data <- df %>%
+  left_join(hci_complete, by = c("year", "country")) %>%
+  
+  # Optional: arrange by country and year
+  arrange(country, year)
+```
+
+
+```{r}
+# Complete missing gdp_ppp values by back-calculating using growth rates
+
+df_ppp <- merged_data %>%
+  arrange(country, year) %>%  # Sort chronologically
+  group_by(country) %>%
+  mutate(
+    # Step 1: Find the earliest year with available gdp_ppp data
+    base_year = min(year[!is.na(gdp_ppp)]),
+    
+    # Step 2: For years before base_year, calculate gdp_ppp backwards
+    gdp_ppp_completed = ifelse(
+      year < base_year,
+      # Back-calculate using compound growth rates (adjusted for percentage)
+      gdp_ppp[year == base_year] / cumprod(1 + gdp_growth[year <= base_year]/100),
+      # Keep original values for base year and later
+      gdp_ppp
+    )
+  ) %>%
+  ungroup() %>%
+  # Optional: Replace original column
+  mutate(gdp_ppp = gdp_ppp_completed) %>%
+  select(-gdp_ppp_completed, -base_year)
+```
+
+
+```{r}
+# Deflating service and goods exports to (constant 2015 US$)
+
+# Define base years for each country
+base_years <- tibble(
+  country = c("Bolivia", "Colombia", "Ecuador", "Peru"),
+  original_base = c(1990, 2015, 2021, 2007)
+)
+
+# Rebase deflator to 2015=100 and deflate exports
+df_deflated <- df_ppp %>%
+  # Join with base years information
+  left_join(base_years, by = "country") %>%
+  
+  # Group by country to perform operations separately
+  group_by(country) %>%
+  
+  mutate(
+    # Step 1: Find the deflator value in each country's original base year
+    deflator_original_base = deflator[year == original_base],
+    
+    # Step 2: Rebase deflator to 2015=100
+    # Formula: (Current deflator / Original base deflator) * 100
+    deflator_2015 = (deflator / deflator_original_base) * 100,
+    
+    # Step 3: Deflate nominal exports to real 2015 US$
+    s_exports_real = (serv_exports_nom / deflator_2015) * 100,
+    g_exports_real = (goods_exports_nom / deflator_2015) * 100,
+    
+    # Step 4: Deflate nominal fdi inflows to real 2015 US$
+    fdi_real = (fdi_inflows / deflator_2015) * 100,
+    
+    # Step 5: Deflate nominal ICT service exports to real 2015 US$
+    ict_real = (ict_nom / deflator_2015) * 100,
+    
+    # Step 6: Calculate serv and goods exports as % GDP 
+    s_exports_gdp = (s_exports_real / gdp_real) * 100,
+    g_exports_gdp = (g_exports_real / gdp_real) * 100,
+    
+    # Calculate real openness ratio (Alcalá & Ciccone, 2004)
+    openness = ((exports_nom + imports_nom) / gdp_ppp) * 100
+    
+  ) %>%
+  
+  # Remove intermediate columns
+  select(-deflator_original_base, -original_base) %>%
+  
+  # Rename the deflator column to reflect new base year
+  # rename(deflator_2015_base = deflator_2015) %>%
+  
+  ungroup()
+```
+
+
+```{r}
+# Imputing missing values in nominal merchandise exports
+
+library(zoo)
+
+# Imputing missing values in merch_nom 
+ df_deflated <- df_deflated %>%
+   arrange(country, year) %>%
+   group_by(country) %>%
+   mutate(
+     agri_merch_imputed = na.approx(agri_merch, x = year, na.rm = FALSE),
+  
+  # Deflate nominal merchandise exports to real 2015 USD
+     merch_real = (merch_nom / deflator_2015) * 100,  
+  
+  # Calculating real agricultural exports
+     agri_real =(merch_real*(agri_merch_imputed/100))
+  
+   ) %>%
+   ungroup()
+ 
+```
+
+
+```{r}
+# Rebase real exchange rate from 2010 to 2015
+
+df_deflated <- df_deflated %>%
+  group_by(country) %>%
+  mutate(
+    base_2015 = rer_2010[year == 2015],
+    rer_2015 = 100 * rer_2010 / base_2015
+  ) %>%
+  ungroup() %>%
+  select(-base_2015)  
+```
+
+
+```{r}
+ # Log Transforming
+
+df_log <- df_deflated %>%
+  mutate(
+    ln_gdp           = log(gdp_real),
+    ln_gdp_pc        = log(gdp_pc_real),
+    ln_gfcf          = log(gfcf_real),
+    ln_gfcf_gdp      = log(gfcf_gdp),
+    ln_s_exports     = log(s_exports_real),
+    ln_g_exports     = log(g_exports_real),
+    ln_s_exports_gdp = log(s_exports_gdp),
+    ln_g_exports_gdp = log(g_exports_gdp),
+    ln_ict           = log(ict_real),
+    ln_agri          = log(agri_real),
+    ln_urban         = log(urban_pop),
+    ln_openness      = log(openness)
+  )
+
+```
+
+
+```{r}
+
+data <- df_log %>%
+  select(
+    country,                 # Country name
+    iso3c,                   # 3-letter ISO country code
+    year,                    # Year
+    ln_gdp,                  # Ln (GDP (constant 2015 US$))
+    ln_gdp_pc,               # Ln (GDP per capita (constant 2015 US$))
+    ln_s_exports,            # Ln (Services exports (constant 2015 US$))
+    ln_g_exports,            # Ln (Goods exports (constant 2015 US$))
+    ln_s_exports_gdp,        # Ln (Services exports (constant 2015 US$) as % GDP)
+    ln_g_exports_gdp,        # Ln (Goods exports (constant 2015 US$) as % GDP)
+    ln_gfcf,                 # Ln (Gross fixed capital formation (constant 2015 US$))
+    ln_gfcf_gdp,             # Ln (Gross fixed capital formation (constant 2015 US$) as % GDP)
+    ln_ict,                  # Ln (ICT service exports (constant 2015 US$))
+    ln_agri,                 # Ln (Agricultural raw materials exports (constant 2015 US$))
+    ln_openness,             # Ln (Ratio (Exports + Imports (current US$) / GDP, PPP (constant 2021 international $)))
+    rer_2015,                # Ln (Real effective exchange rate index rebased to 2015)
+    ln_urban,                # Ln (Urban population (% of total population))
+    inflation,               # Consumer prices (annual %)
+    hc                       # Human Capital Index PWT 10.0
+    
+  ) %>%
+  # Ensure year is numeric and sort
+  mutate(year = as.numeric(year)) %>%
+  arrange(country, year)
+
+```
+
+
+```{r}
+# Visual exploration
+
+library(ggplot2)
+
+ggplot(data, aes(x = year, y = ln_gdp)) +
+  geom_line() +
+  facet_wrap(~country) +
+  ggtitle(" Ln(GDP)")
+
+ggplot(data, aes(x = year, y = ln_gdp_pc)) +
+  geom_line() +
+  facet_wrap(~country) +
+  ggtitle(" Ln(GDP per capita)")
+
+ggplot(data, aes(x = year, y = ln_s_exports)) +
+  geom_line() +
+  facet_wrap(~country) +
+  ggtitle("Ln(Services exports)")
+
+ggplot(data, aes(x = year, y = ln_ict)) +
+  geom_line() +
+  facet_wrap(~country) +
+  ggtitle("Ln(ICT Services exports)")
+
+
+```
+
+
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("strucchange")
+#install.packages("dynlm")
+library(tidyverse)
+library(tseries)
+library(urca)
+library(strucchange)
+library(dynlm)
+library(lmtest)
+library(zoo)
+```
+
+
+################################## BOLIVIA ########################################
+
+
+```{r}
+# Filtering Bolivia
+df_bol <- data %>% filter(country == "Bolivia")
+
+x1 <- df_bol$ln_gdp_pc
+x2 <- df_bol$ln_s_exports
+dx1 <- diff(x1)
+dx2 <- diff(x2)
+```
+
+```{r}
+#install.packages("patchwork")
+library(patchwork)  # Para combinar gráficos
+
+# Gráfico para ln_gdp_pc
+ggplot(df_bol, aes(x = year, y = ln_gdp_pc)) +
+  geom_line(size = 0.5) +
+  labs(title = "Bolivia: PIB per cápita (log)", x = NULL, y = "ln(PIB per cápita)") +
+  theme_minimal()
+
+# Gráfico para ln_s_exports
+ggplot(df_bol, aes(x = year, y = ln_s_exports)) +
+  geom_line(size = 0.5) +
+  labs(title = "Bolivia: Exportaciones de servicios (log)", x = NULL, y = "ln(Exportaciones de servicios)") +
+  theme_minimal()
+
+```
+```{r}
+# Escalar manualmente una de las series (ejemplo: ln_s_exports)
+range_gdp <- range(df_bol$ln_gdp_pc, na.rm = TRUE)
+range_exp <- range(df_bol$ln_s_exports, na.rm = TRUE)
+
+# Escalamiento lineal
+df_bol$ln_s_exports_scaled <- (df_bol$ln_s_exports - range_exp[1]) / diff(range_exp) * diff(range_gdp) + range_gdp[1]
+
+# Graficar
+ggplot(df_bol, aes(x = year)) +
+  geom_line(aes(y = ln_gdp_pc, color = "PIB per cápita (ln)")) +
+  geom_line(aes(y = ln_s_exports_scaled, color = "Exportaciones (ln, eje derecho)")) +
+  geom_vline(xintercept = 1986, linetype = "dashed", color = "black") +
+  scale_y_continuous(
+    name = "PIB per cápita (ln)",
+    sec.axis = sec_axis(
+      trans = ~ (. - range_gdp[1]) / diff(range_gdp) * diff(range_exp) + range_exp[1],
+      name = "Exportaciones de servicios (ln)"
+    )
+  ) +
+  labs(
+    title = "Bolivia: PIB per cápita y Exportaciones de servicios (ejes dobles)",
+    x = "Año",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+cat("\n\n Bolivia - ADF ln_gdp_pc (levels):\n")
+print(adf.test(x1))
+cat("\n\n Bolivia - ADF ln_s_exports (levels):\n")
+print(adf.test(x2))
+
+cat("\n\n Bolivia - ADF d_ln_gdp_pc (first differences):\n")
+print(adf.test(dx1))
+cat("\n\n Bolivia - ADF d_ln_s_exports (first differences):\n")
+print(adf.test(dx2))
+
+```
+
+```{r}
+
+# Bai & Perron: ln_gdp_pc
+cat("\n\n Bolivia - Bai & Perron breaks ln_gdp_pc:\n")
+bp1 <- breakpoints(x1 ~ 1)  # Modelo de nivel constante
+print(summary(bp1))
+plot(bp1, main = "Breakpoints in ln_gdp_pc (Bolivia)")
+
+# Bai & Perron: ln_s_exports
+cat("\n\n Bolivia - Bai & Perron breaks ln_s_exports:\n")
+bp2 <- breakpoints(x2 ~ 1)
+print(summary(bp2))
+plot(bp2, main = "Breakpoints in ln_s_exports (Bolivia)")
+
+```
+
+
+
+```{r}
+
+# Zivot-Andrews test sobre niveles
+
+za_both_gdp <- ur.za(x1, model = "both")
+za_both_exp <- ur.za(x2, model = "both")
+za_diff_both_gdp <- ur.za(dx1, model = "both")
+za_diff_both_exp <- ur.za(dx2, model = "both")
+
+summary(za_both_gdp)
+summary(za_both_exp)
+summary(za_diff_both_gdp)
+summary(za_diff_both_exp)
+
+
+```
+
+
+
+```{r}
+# Asignar año a cada fila
+df_bol$year <- 1977:2023  # Asegúrate que el orden es correcto
+
+# Definir el año de quiebre según test ZA (por ejemplo, 1984)
+break_year <- 1985
+
+# Crear las variables dummy de quiebre y tendencia posterior
+df_bol$D_break <- ifelse(df_bol$year >= break_year, 1, 0)
+df_bol$T_post <- ifelse(df_bol$year >= break_year, df_bol$year - break_year, 0)
+
+# Estimar regresión OLS con quiebre estructural
+ols_model <- lm(ln_gdp_pc ~ ln_s_exports + D_break + T_post, data = df_bol)
+summary(ols_model)
+```
+
+```{r}
+# VAR
+library(vars)
+
+# Matriz de variables endógenas
+Y <- cbind(df_bol$ln_gdp_pc, df_bol$ln_s_exports)
+colnames(Y) <- c("ln_gdp_pc", "ln_s_exports")
+
+# Matriz de variables exógenas (quiebre estructural)
+X_exog <- cbind(df_bol$D_break, df_bol$T_post)
+colnames(X_exog) <- c("D_break", "T_post")
+
+VARselect(Y, lag.max = 5, type = "const")$selection
+```
+
+
+
+```{r}
+library(sandwich)
+library(lmtest)
+
+var_model <- VAR(y = Y, p = 1, type = "const", exogen = X_exog)
+summary(var_model)
+
+```
+
+
+```{r}
+# No hay evidencia de autocorrelación en los residuos.
+serial_test <- serial.test(var_model, lags.pt = 12, type = "PT.asymptotic")
+print(serial_test)
+```
+```{r}
+serial.test(var_model, lags.bg = 12, type = "BG")
+```
+```{r}
+# Prueba de estabilidad -->. El var es estable
+
+stab_test <- stability(var_model, type = "OLS-CUSUM")
+plot(stab_test)
+```
+```{r}
+# La prueba de Jarque-Bera multivariada rechaza con fuerza la hipótesis de normalidad en los residuos del VAR(2).
+# Tanto la asimetría como la kurtosis excesiva (colas pesadas) contribuyen a esta desviación.
+# Aunque esto no invalida tu modelo, sí limita el uso de inferencias basadas en la distribución normal (tests t, F o Wald en forma estándar).
+
+jb_test <- normality.test(var_model)
+jb_test
+```
+```{r}
+
+# La hipótesis nula (H₀) del ARCH test es que no hay heterocedasticidad condicional (varianza constante en los residuos).
+# El p-value = 0.041 → rechazas H₀ al 5%, aunque de forma marginal.
+# Esto implica que hay evidencia de heterocedasticidad en los residuos, es decir, la varianza no es constante en el tiempo.
+
+arch_test <- arch.test(var_model, lags.multi = 5)
+arch_test
+```
+
+
+```{r}
+
+library(sandwich)
+library(lmtest)
+
+# Covarianza White   (heterocedasticity-consistent)
+vcov_white <- vcovHC(var_model, type = "HC0")
+coeftest(var_model, vcov_white)
+
+```
+
+
+```{r}
+irf(
+  var_model,
+  horizon = 10,
+  CI = c(0.1, 0.9),
+  bootstrap.type = "wild",
+  bootstrap.num = 1000,
+  bootstrap.parallel = FALSE,
+  bootstrap.cores = -1
+)
+```
+
+```{r}
+# Horizonte
+h <- 1:11
+
+# -------- Respuestas a shock de ln_gdp_pc --------
+# ln_gdp_pc -> ln_gdp_pc
+irf_gdp_gdp <- c(0.025894441, 0.021690787, 0.018264220, 0.015409935, 0.013011792,
+                 0.010990130, 0.009283640, 0.007842469, 0.006625134, 0.005596795, 0.004728084)
+lower_gdp_gdp <- c(0.0143564196, 0.0102687168, 0.0072760031, 0.0049144514, 0.0030825499,
+                   0.0019196659, 0.0011495986, 0.0006889660, 0.0004133035, 0.0002482024, 0.0001492212)
+upper_gdp_gdp <- c(0.034518093, 0.026502272, 0.021913701, 0.018723682, 0.016365948,
+                   0.014124137, 0.012191305, 0.010523935, 0.009086187, 0.007850293, 0.006782886)
+
+# ln_gdp_pc -> ln_s_exports
+irf_exports_gdp <- c(0.30454205, 0.23191612, 0.18769336, 0.15589200, 0.13082956,
+                     0.11024206, 0.09303978, 0.07856910, 0.06636445, 0.05606061, 0.04735818)
+lower_exports_gdp <- c(0.0710860153, 0.0670323002, 0.0275006677, 0.0077198211, 0.0012424138,
+                       -0.0008070419, -0.0012762880, -0.0012235395, -0.0010309395, -0.0008283195, -0.0005160872)
+upper_exports_gdp <- c(0.42176696, 0.34486090, 0.27275685, 0.22584943, 0.18597695,
+                       0.15794978, 0.13694469, 0.11871433, 0.10290519, 0.09215184, 0.07880344)
+
+# -------- Respuestas a shock de ln_s_exports --------
+# ln_s_exports -> ln_gdp_pc
+irf_gdp_exports <- c(0.0000000000, -0.0022523150, -0.0026334037, -0.0024617037, -0.0021565113,
+                     -0.0018467367, -0.0015681897, -0.0013274094, -0.0011222280, -0.0009483183, -0.0008012152)
+lower_gdp_exports <- c(0.000000000, -0.003445877, -0.003766827, -0.003299180, -0.002879797,
+                       -0.002475088, -0.002122069, -0.001808466, -0.001547606, -0.001324312, -0.001136720)
+upper_gdp_exports <- c(0.0000000000, 0.0022925323, 0.0021664578, 0.0016748211, 0.0012195659,
+                       0.0008655971, 0.0006084121, 0.0004255443, 0.0002728275, 0.0002161513, 0.0001686633)
+
+# ln_s_exports -> ln_s_exports
+irf_exports_exports <- c(0.551624197, 0.156394446, 0.031678299, -0.005823167, -0.015490180,
+                         -0.016515203, -0.015064322, -0.013087036, -0.011172824, -0.009476624, -0.008018037)
+lower_exports_exports <- c(0.291540964, 0.038405748, -0.009194718, -0.030144321, -0.031948168,
+                           -0.028968526, -0.025139977, -0.021560253, -0.018430521, -0.015742463, -0.013445013)
+upper_exports_exports <- c(0.773313130, 0.261247180, 0.100432543, 0.043302369, 0.021367290,
+                           0.012497219, 0.007349524, 0.004327774, 0.003238239, 0.002492959, 0.001947626)
+
+# -------- Graficamos los 4 IRFs --------
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# 1. ln_gdp_pc → ln_gdp_pc
+plot(h, irf_gdp_gdp, type = "l", lwd = 2, col = "blue",
+     ylim = range(c(lower_gdp_gdp, upper_gdp_gdp)),
+     main = "IRF: GDPPC to GDPPC shock",
+     xlab = "Horizon", ylab = "Response")
+lines(h, lower_gdp_gdp, col = "red", lty = 2)
+lines(h, upper_gdp_gdp, col = "red", lty = 2)
+abline(h = 0, lty = 3)
+
+# 2. ln_gdp_pc → ln_s_exports
+plot(h, irf_exports_gdp, type = "l", lwd = 2, col = "blue",
+     ylim = range(c(lower_exports_gdp, upper_exports_gdp)),
+     main = "IRF: S_EXPORTS to GDPPC shock",
+     xlab = "Horizon", ylab = "Response")
+lines(h, lower_exports_gdp, col = "red", lty = 2)
+lines(h, upper_exports_gdp, col = "red", lty = 2)
+abline(h = 0, lty = 3)
+
+# 3. ln_s_exports → ln_gdp_pc
+plot(h, irf_gdp_exports, type = "l", lwd = 2, col = "blue",
+     ylim = range(c(lower_gdp_exports, upper_gdp_exports)),
+     main = "IRF: GDPPC to S_EXPORTS shock",
+     xlab = "Horizon", ylab = "Response")
+lines(h, lower_gdp_exports, col = "red", lty = 2)
+lines(h, upper_gdp_exports, col = "red", lty = 2)
+abline(h = 0, lty = 3)
+
+# 4. ln_s_exports → ln_s_exports
+plot(h, irf_exports_exports, type = "l", lwd = 2, col = "blue",
+     ylim = range(c(lower_exports_exports, upper_exports_exports)),
+     main = "IRF: S_EXPORTS to S_EXPORTS shock",
+     xlab = "Horizon", ylab = "Response")
+lines(h, lower_exports_exports, col = "red", lty = 2)
+lines(h, upper_exports_exports, col = "red", lty = 2)
+abline(h = 0, lty = 3)
+
+```
+
+
+################################## COLOMBIA ########################################
+
+
+```{r}
+# Filtering Colombia
+
+df_col <- data %>% filter(country == "Colombia")
+
+x1 <- df_col$ln_gdp_pc
+x2 <- df_col$ln_s_exports
+dx1 <- diff(x1)
+dx2 <- diff(x2)
+ddx1 <- diff(diff(x1))
+ddx2 <- diff(diff(x2))
+
+cat("\n\n Colombia - ADF ln_gdp_pc (levels):\n")
+print(adf.test(x1))
+cat("\n\n Colombia - ADF ln_s_exports (levels):\n")
+print(adf.test(x2))
+
+cat("\n\n Colombia - ADF d_ln_gdp_pc (first differences):\n")
+print(adf.test(dx1))
+cat("\n\n Colombia - ADF d_ln_s_exports (first differences):\n")
+print(adf.test(dx2))
+
+cat("\n\n Colombia - ADF d_ln_gdp_pc (Second differences):\n")
+print(adf.test(ddx1))
+cat("\n\n Colombia - ADF d_ln_s_exports (Second differences):\n")
+print(adf.test(ddx2))
+
+```
+
+```{r}
+
+# Zivot-Andrews test sobre niveles
+
+za_both_gdp <- ur.za(x1, model = "both")
+za_both_exp <- ur.za(x2, model = "both")
+za_diff_both_gdp <- ur.za(dx1, model = "both")
+za_diff_both_exp <- ur.za(dx2, model = "both")
+za_2diff_both_gdp <- ur.za(ddx1, model = "both")
+za_2diff_both_exp <- ur.za(ddx2, model = "both")
+
+cat("\n\n Colombia - Z-A ln_gdp_pc (levels):\n")
+summary(za_both_gdp)
+cat("\n\n Colombia - Z-A ln_s_exports (levels):\n")
+summary(za_both_exp)
+cat("\n\n Colombia - Z-A ln_gdp_pc (First differences):\n")
+summary(za_diff_both_gdp)
+cat("\n\n Colombia - Z-A ln_s_exports (First differences):\n")
+summary(za_diff_both_exp)
+cat("\n\n Colombia - Z-A ln_gdp_pc (Second differences):\n")
+summary(za_2diff_both_gdp)
+cat("\n\n Colombia - Z-A ln_s_exports (Second differences):\n")
+summary(za_2diff_both_exp)
+
+```
+```{r}
+# Gráfico para ln_gdp_pc
+ggplot(df_col, aes(x = year, y = ln_gdp_pc)) +
+  geom_line(size = 0.5) +
+  labs(title = "Colombia: PIB per cápita (log)", x = NULL, y = "ln(PIB per cápita)") +
+  theme_minimal()
+
+# Gráfico para ln_s_exports
+ggplot(df_col, aes(x = year, y = ln_s_exports)) +
+  geom_line(size = 0.5) +
+  labs(title = "Colombia: Exportaciones de servicios (log)", x = NULL, y = "ln(Exportaciones de servicios)") +
+  theme_minimal()
+```
+```{r}
+
+# Bai & Perron: ln_gdp_pc
+cat("\n\n Colombia - Bai & Perron breaks ln_gdp_pc:\n")
+bp1 <- breakpoints(x1 ~ 1)  # Modelo de nivel constante
+print(summary(bp1))
+plot(bp1, main = "Breakpoints in ln_gdp_pc (Colombia)")
+
+# Bai & Perron: ln_s_exports
+cat("\n\n Colombia - Bai & Perron breaks ln_s_exports:\n")
+bp2 <- breakpoints(x2 ~ 1)
+print(summary(bp2))
+plot(bp2, main = "Breakpoints in ln_s_exports (Colombia)")
+
+```
+
+```{r}
+# Asignar año a cada fila
+df_col$year <- 1977:2023  # Asegúrate que el orden es correcto
+
+# Definir el año de quiebre
+break_year <- 2003
+
+# Crear las variables dummy de quiebre y tendencia posterior
+# df_col$D_break <- ifelse(df_bol$year >= break_year, 1, 0)
+df_col$T_post <- ifelse(df_col$year >= break_year, df_col$year - break_year, 0)
+
+# Estimar regresión OLS con quiebre estructural
+ols_model <- lm(ln_gdp_pc ~ ln_s_exports + T_post, data = df_col)
+summary(ols_model)
+```
+```{r}
+#install.packages("dynlm")
+#install.packages("urca")
+#install.packages("ARDL")
+#install.packages("dynamac")
+#install.packages("dLagM")
+library(dynlm)
+library(urca)
+library(ARDL)
+library(dynamac)
+library(dLagM)
+```
+
+
+
+```{r}
+# Crea la dummy de cambio en nivel (salto permanente desde 2003)
+df_col$D_2006 <- ifelse(df_col$year >= 2006, 1, 0)
+
+# Crea la variable de cambio en tendencia desde 2003
+df_col$DT_2003 <- ifelse(df_col$year >= 2003, df_col$year - 2002, 0)
+
+# Crea una serie temporal con tu dataframe
+# Asumiendo que year va de 1977 a 2023 (47 observaciones)
+ts_data <- ts(df_col[, c("ln_gdp_pc", "ln_s_exports", "D_2006", "DT_2003")], start = min(df_col$year), frequency = 1)
+
+# Estima el modelo ARDL: el argumento 'order' define los rezagos máximos a probar (ej: c(4, 4))
+modelo_ardl <- ardl(ln_gdp_pc ~ ln_s_exports + D_2006 + DT_2003, data = ts_data, order = c(1, 1, 0, 0))
+
+# Muestra un resumen del modelo
+summary(modelo_ardl)
+
+bounds_f_test(modelo_ardl, case = "3")
+
+AIC(modelo_ardl)  # Menor AIC → mejor modelo
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
