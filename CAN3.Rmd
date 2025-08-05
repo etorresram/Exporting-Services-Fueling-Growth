@@ -805,7 +805,7 @@ print(adf.test(ddx2))
 ```
 ```{r}
 
-# Zivot-Andrews test sobre niveles
+# Zivot-Andrews
 
 za_both_gdp <- ur.za(x1, model = "both")
 za_both_exp <- ur.za(x2, model = "both")
@@ -873,9 +873,76 @@ summary(ecm_model)
 ```
 
 
+################################## PERU ########################################
 
 
+```{r}
+# Filtering PERU
 
+df_per <- data %>% filter(country == "Peru")
+
+x1 <- df_per$ln_gdp_pc
+x2 <- df_per$ln_s_exports
+dx1 <- diff(x1)
+dx2 <- diff(x2)
+ddx1 <- diff(diff(x1))
+ddx2 <- diff(diff(x2))
+
+cat("\n\n Peru - ADF ln_gdp_pc (levels):\n")
+print(adf.test(x1))
+cat("\n\n Peru - ADF ln_s_exports (levels):\n")
+print(adf.test(x2))
+
+cat("\n\n Peru - ADF d_ln_gdp_pc (first differences):\n")
+print(adf.test(dx1))
+cat("\n\n Peru - ADF d_ln_s_exports (first differences):\n")
+print(adf.test(dx2))
+
+cat("\n\n Peru - ADF d_ln_gdp_pc (Second differences):\n")
+print(adf.test(ddx1))
+cat("\n\n Peru - ADF d_ln_s_exports (Second differences):\n")
+print(adf.test(ddx2))
+
+```
+
+```{r}
+
+# Zivot-Andrews
+
+za_both_gdp <- ur.za(x1, model = "both")
+za_both_exp <- ur.za(x2, model = "both")
+za_diff_both_gdp <- ur.za(dx1, model = "both")
+za_diff_both_exp <- ur.za(dx2, model = "both")
+za_2diff_both_gdp <- ur.za(ddx1, model = "both")
+za_2diff_both_exp <- ur.za(ddx2, model = "both")
+
+cat("\n\n Peru - Z-A ln_gdp_pc (levels):\n")
+summary(za_both_gdp)
+cat("\n\n Peru - Z-A ln_s_exports (levels):\n")
+summary(za_both_exp)
+cat("\n\n Peru - Z-A ln_gdp_pc (First differences):\n")
+summary(za_diff_both_gdp)
+cat("\n\n Peru - Z-A ln_s_exports (First differences):\n")
+summary(za_diff_both_exp)
+cat("\n\n Peru - Z-A ln_gdp_pc (Second differences):\n")
+summary(za_2diff_both_gdp)
+cat("\n\n Peru - Z-A ln_s_exports (Second differences):\n")
+summary(za_2diff_both_exp)
+
+```
+```{r}
+# Gráfico para ln_gdp_pc
+ggplot(df_per, aes(x = year, y = ln_gdp_pc)) +
+  geom_line(size = 0.5) +
+  labs(title = "Peru: PIB per cápita (log)", x = NULL, y = "ln(PIB per cápita)") +
+  theme_minimal()
+
+# Gráfico para ln_s_exports
+ggplot(df_per, aes(x = year, y = ln_s_exports)) +
+  geom_line(size = 0.5) +
+  labs(title = "Peru: Exportaciones de servicios (log)", x = NULL, y = "ln(Exportaciones de servicios)") +
+  theme_minimal()
+```
 
 
 
